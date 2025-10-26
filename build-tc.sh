@@ -139,8 +139,12 @@ msg "$LLVM_NAME: Building LLVM..."
 tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
     "$base"/build-llvm.py \
 	--vendor-string "$LLVM_NAME" \
-	--defines LLVM_PARALLEL_COMPILE_JOBS=$(nproc) LLVM_PARALLEL_LINK_JOBS=$(nproc) CMAKE_C_FLAGS=-O3 CMAKE_CXX_FLAGS=-O3 \
-	--ref release/21.x \
+	--defines \
+		LLVM_PARALLEL_COMPILE_JOBS=$(nproc) \
+		LLVM_PARALLEL_LINK_JOBS=$(nproc) \
+		CMAKE_C_FLAGS=-O3 \
+		CMAKE_CXX_FLAGS=-O3 \
+	--ref clang-21 \
 	--targets AArch64 ARM X86 \
 	--lto thin \
 	--bolt \

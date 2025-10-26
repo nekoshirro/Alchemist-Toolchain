@@ -146,6 +146,7 @@ tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
 		CMAKE_CXX_FLAGS=-O3 \
 	--ref clang-21 \
 	--targets AArch64 ARM X86 \
+	--full-toolchain \
 	--lto thin \
 	--bolt \
 	--projects "clang;lld;polly;compiler-rt" \

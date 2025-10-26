@@ -346,7 +346,7 @@ parser.add_argument('-r',
                     does not own.
 
                     '''),
-                    default='main',
+                    default='clang-21',
                     type=str)
 clone_options.add_argument('-s',
                            '--shallow-clone',

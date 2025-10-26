@@ -620,9 +620,9 @@ class LLVMSourceManager:
         git_clone = ['git', 'clone']
         if shallow:
             git_clone.append('--depth=1')
-            if ref != 'main':
+            if ref != 'clang-21':
                 git_clone.append('--no-single-branch')
-        git_clone += ['https://github.com/llvm/llvm-project', self.repo]
+        git_clone += ['https://github.com/nekoshirro/Alchemist-LLVM', self.repo]
 
         subprocess.run(git_clone, check=True)
 

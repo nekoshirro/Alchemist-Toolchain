@@ -67,6 +67,7 @@ function do_all() {
 
 function do_binutils() {
 msg "$LLVM_NAME: Building binutils..."
+tg_post_msg "<b>$LLVM_NAME: Building Binutils. . .</b>"
     "$base"/build-binutils.py \
         --install-folder "$install" \
         --show-build-commands \
@@ -169,7 +170,7 @@ llvm_commit_url="https://github.com/nekoshirro/Alchemist-LLVM/commit/$short_llvm
 binutils_ver="$(ls | grep "^binutils-" | sed "s/binutils-//g")"
 clang_version="$(install/bin/clang --version | head -n1 | cut -d' ' -f4)"
 
-tg_post_msg "<b>$LLVM_NAME: Toolchain compilation Finished</b>%0A<b>Clang Version : </b><code>$clang_version</code>%0A<b>LLVM Commit : </b><code>$llvm_commit_url</code>%0A<b>Binutils Version : </b><code>$binutils_ver</code>"
+tg_post_msg "<b>$LLVM_NAME: Toolchain compilation Finished</b>%0A<b>Clang Version : </b><code>$clang_version</code>%0A<b>LLVM Commit : </b><code>$llvm_commit_url</code>"
 
 # Downgrade the HTTP version to 1.1
 git config --global http.version HTTP/1.1

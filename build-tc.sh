@@ -161,7 +161,7 @@ parse_parameters "$@"
 do_"${action:=all}"
 
 # Release Info
-pushd llvm-project || exit
+pushd src/llvm-project || exit
 llvm_commit="$(git rev-parse HEAD)"
 short_llvm_commit="$(cut -c-8 <<< "$llvm_commit")"
 popd || exit

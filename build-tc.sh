@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 msg() {
     echo -e "\e[1;32m$*\e[0m"
 }
@@ -145,14 +147,12 @@ tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
 		CMAKE_C_FLAGS=-O3 \
 		CMAKE_CXX_FLAGS=-O3 \
 	--ref clang-21 \
+	--install-folder "$base/install" \
 	--targets AArch64 ARM X86 \
 	--full-toolchain \
-	--lto thin \
-	--bolt \
-	--projects "clang;lld;polly;compiler-rt" \
-	--pgo kernel-defconfig \
+	--projects clang lld polly compiler-rt \
 	--shallow-clone
-
+}
 
 #  Check if the final clang binary exists or not.
 [ ! -f install/bin/clang-1* ] && {

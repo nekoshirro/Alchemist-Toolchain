@@ -11,7 +11,7 @@ err() {
 }
 
 # Secret Variable for Local Build
-LLVM_NAME="🧪Alchemist"
+LLVM_NAME="🧪Alchemist (+LTO-Thin)"
 TG_TOKEN="5171513339:AAFMofFtLRVxsPlGhqjAFA-gjMyQLMfK2ns"
 TG_CHAT_ID="-1001769713594"
 GH_USERNAME="nekoshirro"
@@ -147,6 +147,7 @@ tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
 		CMAKE_C_FLAGS=-O2 \
 		CMAKE_CXX_FLAGS=-O2 \
 	--ref clang-21 \
+	--lto thin \
 	--install-folder "$base/install" \
 	--targets AArch64 ARM X86 \
 	--full-toolchain \

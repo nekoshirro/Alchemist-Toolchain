@@ -146,7 +146,7 @@ tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
 		LLVM_PARALLEL_LINK_JOBS=$(nproc) \
 		CMAKE_C_FLAGS=-O2 \
 		CMAKE_CXX_FLAGS=-O2 \
-	--ref clang-21 \
+	--ref clang-22 \
 	--lto thin \
 	--install-folder "$base/install" \
 	--targets AArch64 ARM X86 \

@@ -11,7 +11,7 @@ err() {
 }
 
 # Secret Variable for Local Build
-LLVM_NAME="🧪Alchemist (+LTO-Thin)"
+LLVM_NAME="🧪Alchemist"
 TG_TOKEN="5171513339:AAFMofFtLRVxsPlGhqjAFA-gjMyQLMfK2ns"
 TG_CHAT_ID="-1001769713594"
 GH_USERNAME="nekoshirro"

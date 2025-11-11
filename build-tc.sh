@@ -179,7 +179,7 @@ git config --global http.postBuffer 55428800
 # Update Git repository
 git config --global user.name "Hafidz Muzakky"
 git config --global user.email $GH_EMAIL
-git clone "https://$GH_USERNAME:$GH_TOKEN@$GH_PUSH_REPO_URL" rel_repo
+git clone "https://$GH_USERNAME:$GH_TOKEN@$GH_PUSH_REPO_URL" -b clang-21-LTO rel_repo
 
 pushd rel_repo || exit
 rm -fr ./*
@@ -193,7 +193,7 @@ LLVM commit: $llvm_commit_url
 Clang Version: $clang_version
 Binutils version: $binutils_ver
 Builder commit: https://$GH_PUSH_REPO_URL/commit/$builder_commit"
-git push -f
+git push -u origin clang-21-LTO -f
 popd || exit
 
 tg_post_msg "<b>$LLVM_NAME: Toolchain pushed to <code>https://$GH_PUSH_REPO_URL</code></b>"

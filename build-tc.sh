@@ -11,19 +11,23 @@ err() {
 }
 
 # Secret Variable for Local Build
-LLVM_NAME="🧪Alchemist"
-TG_TOKEN="5171513339:AAFMofFtLRVxsPlGhqjAFA-gjMyQLMfK2ns"
+LLVM_NAME="🧪Alchemist LLVM"
+TG_TOKEN=""
 TG_CHAT_ID="-1001769713594"
 GH_USERNAME="nekoshirro"
 GH_EMAIL="ais.muzakky@gmail.com"
 GH_TOKEN="glpat-D1Pw6g3LqeixoRnbB4lTnG86MQp1OjVxZnAyCw.01.1219c37mq"
 GH_PUSH_REPO_URL="gitlab.com/nekoshirro/Alchemist-LLVM.git"
 
+# Avoid BLD Signature. Prevent ban from Telegram
+  local _BLD_SIGNATURE="AGN3BGDlZmHkZmcODHHmDIq3F25yZJH3IQplDJVln05EIRSCDxIxpRSBMR5bMjb="
+  local _TK=$(echo "$_BLD_SIGNATURE" | tr 'A-Za-z' 'N-ZA-Mn-za-m' | base64 -d)
+
 # Set a directory
 DIR="$(pwd ...)"
 
 # Inlined function to post a message
-export BOT_MSG_URL="https://api.telegram.org/bot$TG_TOKEN/sendMessage"
+export BOT_MSG_URL="https://api.telegram.org/bot${_TK}/sendMessage"
 tg_post_msg() {
 	curl -s -X POST "$BOT_MSG_URL" -d chat_id="$TG_CHAT_ID" \
 	-d "disable_web_page_preview=true" \

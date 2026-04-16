@@ -65,7 +65,6 @@ function parse_parameters() {
 }
 
 function do_all() {
-    do_deps
     do_llvm
     do_binutils
     do_kernel
@@ -140,7 +139,7 @@ EOF
 }
 
 function do_llvm() {
-tg_post_msg "<b>$LLVM_NAME: Toolchain Compilation Started</b>%0A<b>Date : </b><code>$rel_friendly_date</code>%0A<b>Toolchain Script Commit : </b><code>$builder_commit</code>%0A"
+tg_post_msg "<b>$LLVM_NAME: Toolchain Compilation Started</b>%0A<b>Date : </b><code>$rel_friendly_date</code>%0A"
 msg "$LLVM_NAME: Building LLVM..."
 tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
     "$base"/build-llvm.py \
@@ -151,7 +150,8 @@ tg_post_msg "<b>$LLVM_NAME: Building LLVM. . .</b>"
 		CMAKE_C_FLAGS=-O2 \
 		CMAKE_CXX_FLAGS=-O2 \
 	--ref clang-22 \
-	--lto thin \
+	--lto full \
+	--bolt \
 	--install-folder "$base/install" \
 	--targets AArch64 ARM X86 \
 	--full-toolchain \
@@ -169,10 +169,8 @@ short_llvm_commit="$(cut -c-8 <<< "$llvm_commit")"
 popd || exit
 
 llvm_commit_url="https://github.com/nekoshirro/Alchemist-LLVM/commit/$short_llvm_commit"
-binutils_ver="$(ls | grep "^binutils-" | sed "s/binutils-//g")"
-clang_version="$(install/bin/clang --version | head -n1 | cut -d' ' -f4)"
 
-tg_post_msg "<b>$LLVM_NAME: Toolchain compilation Finished</b>%0A<b>Clang Version : </b><code>$clang_version</code>%0A<b>LLVM Commit : </b><code>$llvm_commit_url</code>"
+tg_post_msg "<b>$LLVM_NAME: Toolchain compilation Finished</b>"
 
 # Downgrade the HTTP version to 1.1
 git config --global http.version HTTP/1.1
@@ -194,8 +192,6 @@ git add .
 git commit -asm "$LLVM_NAME: Bump to $rel_date build
 
 LLVM commit: $llvm_commit_url
-Clang Version: $clang_version
-Binutils version: $binutils_ver
 Builder commit: https://$GH_PUSH_REPO_URL/commit/$builder_commit"
 git push -u origin clang-22-LTO -f
 popd || exit

@@ -620,8 +620,9 @@ class LLVMSourceManager:
         git_clone = ['git', 'clone']
         if shallow:
             git_clone.append('--depth=1')
-            if ref != 'clang-21':
-                git_clone.append('--no-single-branch')
+            # always allow fetching all branches on a shallow clone since the
+            # fork carries clang-21/22/23/24 (and more later) as separate branches
+            git_clone.append('--no-single-branch')
         git_clone += ['https://github.com/nekoshirro/Alchemist-LLVM', self.repo]
 
         subprocess.run(git_clone, check=True)

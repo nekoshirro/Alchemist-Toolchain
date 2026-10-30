@@ -857,7 +857,9 @@ class LLVMSourceManager(GitSourceManager):
         super().__init__(repo)
 
         self._pretty_name = 'LLVM'
-        self._repo_url = 'https://github.com/llvm/llvm-project.git'
+        self._repo_url = os.environ.get(
+            'LLVM_REPO_URL', 'https://github.com/nekoshirro/Alchemist-LLVM.git'
+        )
 
     @staticmethod
     def default_projects():

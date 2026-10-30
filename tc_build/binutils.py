@@ -1,22 +1,20 @@
-#!/usr/bin/env python3
-
 import os
-from pathlib import Path
 import platform
+import subprocess
+from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import tc_build.utils
 from tc_build.builder import Builder
 from tc_build.source import SourceManager
-import tc_build.utils
 
 
 class BinutilsBuilder(Builder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        self.cflags = ['-O2']
-        self.configure_flags = [
+        self.cflags: list[str] = ['-O2']
+        self.configure_flags: tc_build.utils.CmdList = [
             '--disable-compressed-debug-sections',
             '--disable-gdb',
             '--disable-gprofng',
@@ -30,16 +28,16 @@ class BinutilsBuilder(Builder):
             '--with-system-zlib',
         ]
 
-        self.configure_vars = {
+        self.configure_vars: dict[str, str] = {
             'CC': 'gcc',
             'CXX': 'g++',
         }
-        self.extra_targets = []
-        self.native_arch = ''
-        self.target = ''
+        self.extra_targets: list[str] = []
+        self.native_arch: str = ''
+        self.target: str = ''
 
-    def build(self):
-        if self.folders.install:
+    def build(self) -> None:
+        if tc_build.utils.path_is_set(self.folders.install):
             self.configure_flags.append(f"--prefix={self.folders.install}")
         if platform.machine() != self.native_arch:
             self.configure_flags += [
@@ -51,6 +49,16 @@ class BinutilsBuilder(Builder):
 
         self.configure_vars['CFLAGS'] = ' '.join(self.cflags)
         self.configure_vars['CXXFLAGS'] = ' '.join(self.cflags)
+
+        # Avoid "input SFrame sections with different format versions prevent
+        # .sframe generation" error by discarding .sframe altogether if
+        # possible, as we may be linking against libraries with their own
+        # .sframe sections and versions.
+        ld_help = subprocess.run(
+            ['ld', '--help'], capture_output=True, check=True, text=True
+        ).stdout
+        if '--discard-sframe' in ld_help:
+            self.configure_vars['LDFLAGS'] = '-Wl,--discard-sframe'
 
         self.clean_build_folder()
         self.folders.build.mkdir(exist_ok=True, parents=True)
@@ -71,14 +79,13 @@ class BinutilsBuilder(Builder):
             make_cmd = ['make', '-C', self.folders.build, '-s', f"-j{os.cpu_count()}", 'V=0']
             self.run_cmd(make_cmd)
 
-            if self.folders.install:
+            if tc_build.utils.path_is_set(self.folders.install):
                 self.run_cmd([*make_cmd, 'install'])
                 tc_build.utils.create_gitignore(self.folders.install)
 
 
 class StandardBinutilsBuilder(BinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.configure_flags += [
@@ -90,8 +97,7 @@ class StandardBinutilsBuilder(BinutilsBuilder):
 
 
 class NoMultilibBinutilsBuilder(BinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.configure_flags += [
@@ -102,8 +108,7 @@ class NoMultilibBinutilsBuilder(BinutilsBuilder):
 
 
 class ArmBinutilsBuilder(NoMultilibBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'armv7l'
@@ -111,8 +116,7 @@ class ArmBinutilsBuilder(NoMultilibBinutilsBuilder):
 
 
 class AArch64BinutilsBuilder(NoMultilibBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'aarch64'
@@ -120,8 +124,7 @@ class AArch64BinutilsBuilder(NoMultilibBinutilsBuilder):
 
 
 class LoongArchBinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'loongarch64'
@@ -129,8 +132,7 @@ class LoongArchBinutilsBuilder(StandardBinutilsBuilder):
 
 
 class MipsBinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self, endian_suffix=''):
+    def __init__(self, endian_suffix: str = '') -> None:
         super().__init__()
 
         target_64 = f"mips64{endian_suffix}"
@@ -142,14 +144,12 @@ class MipsBinutilsBuilder(StandardBinutilsBuilder):
 
 
 class MipselBinutilsBuilder(MipsBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('el')
 
 
 class PowerPCBinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'ppc'
@@ -157,8 +157,7 @@ class PowerPCBinutilsBuilder(StandardBinutilsBuilder):
 
 
 class PowerPC64BinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'ppc64'
@@ -166,8 +165,7 @@ class PowerPC64BinutilsBuilder(StandardBinutilsBuilder):
 
 
 class PowerPC64LEBinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'ppc64le'
@@ -175,8 +173,7 @@ class PowerPC64LEBinutilsBuilder(StandardBinutilsBuilder):
 
 
 class RISCV64BinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.native_arch = 'riscv64'
@@ -184,18 +181,24 @@ class RISCV64BinutilsBuilder(StandardBinutilsBuilder):
 
 
 class S390XBinutilsBuilder(StandardBinutilsBuilder):
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        self.extra_targets.append('s390-linux-gnu')
         self.native_arch = 's390x'
         self.target = 's390x-linux-gnu'
 
 
-class X8664BinutilsBuilder(StandardBinutilsBuilder):
+class Sparc64BinutilsBuilder(StandardBinutilsBuilder):
+    def __init__(self) -> None:
+        super().__init__()
 
-    def __init__(self):
+        self.extra_targets.append('sparc-linux-gnu')
+        self.native_arch = 'sparc64'
+        self.target = 'sparc64-linux-gnu'
+
+
+class X8664BinutilsBuilder(StandardBinutilsBuilder):
+    def __init__(self) -> None:
         super().__init__()
 
         self.extra_targets.append('x86_64-pep')
@@ -204,8 +207,7 @@ class X8664BinutilsBuilder(StandardBinutilsBuilder):
 
 
 class BinutilsSourceManager(SourceManager):
-
-    def default_targets(self):
+    def default_targets(self) -> list[str]:
         targets = [
             'aarch64',
             'arm',
@@ -216,20 +218,23 @@ class BinutilsSourceManager(SourceManager):
             'powerpc64le',
             'riscv64',
             's390x',
+            'sparc64',
             'x86_64',
         ]
         if Path(self.location, 'gas/config/tc-loongarch.c').exists():
             targets.append('loongarch64')
         return targets
 
-    def prepare(self):
-        if not self.location:
-            raise RuntimeError('No source location set?')
+    def prepare(self) -> None:
+        if not tc_build.utils.path_is_set(self.location):
+            msg = 'No source location set?'
+            raise RuntimeError(msg)
         if self.location.exists():
             return  # source already set up
 
-        if not self.tarball.local_location:
-            raise RuntimeError('No local tarball location set?')
+        if not tc_build.utils.path_is_set(self.tarball.local_location):
+            msg = 'No local tarball location set?'
+            raise RuntimeError(msg)
         if not self.tarball.local_location.exists():
             self.tarball.download()
 

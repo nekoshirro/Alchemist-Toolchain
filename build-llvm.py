@@ -1,56 +1,72 @@
 #!/usr/bin/env python3
 # pylint: disable=invalid-name
 
-from argparse import ArgumentParser, RawTextHelpFormatter
-from pathlib import Path
 import platform
 import textwrap
 import time
+from argparse import ArgumentParser, RawTextHelpFormatter
+from pathlib import Path
+from typing import Any
 
 import tc_build.utils
-
-from tc_build.llvm import LLVMBootstrapBuilder, LLVMBuilder, LLVMInstrumentedBuilder, LLVMSlimBuilder, LLVMSlimInstrumentedBuilder, LLVMSourceManager
 from tc_build.kernel import KernelBuilder, LinuxSourceManager, LLVMKernelBuilder
+from tc_build.llvm import (
+    VALID_DISTRIBUTION_PROFILES,
+    CmakeVars,
+    LLVMBootstrapBuilder,
+    LLVMBuilder,
+    LLVMInstrumentedBuilder,
+    LLVMSlimBuilder,
+    LLVMSlimInstrumentedBuilder,
+    LLVMSourceManager,
+)
 from tc_build.tools import HostTools, StageTools
 
+BOOL_ARGS: dict[str, Any]
 try:
     # pylint: disable-next=ungrouped-imports
     from argparse import BooleanOptionalAction
+
     # 'store_true' sets 'default' implicitly, do it explicitly to match
     BOOL_ARGS = {'action': BooleanOptionalAction, 'default': False}
 except ImportError:
     BOOL_ARGS = {'action': 'store_true'}
 
 # This is a known good revision of LLVM for building the kernel
-GOOD_REVISION = '3c0f7b184d265281dfcd4fab73348bc0e72c9902'
+GOOD_REVISION = '71122e716c7f507cb98df69961dbce21a187aa91'
 
 # The version of the Linux kernel that the script downloads if necessary
-DEFAULT_KERNEL_FOR_PGO = (6, 17, 0)
+DEFAULT_KERNEL_FOR_PGO = (7, 3, 0)
 
 parser = ArgumentParser(formatter_class=RawTextHelpFormatter)
 clone_options = parser.add_mutually_exclusive_group()
 opt_options = parser.add_mutually_exclusive_group()
 
-parser.add_argument('--assertions',
-                    help=textwrap.dedent('''\
+parser.add_argument(
+    '--assertions',
+    help=textwrap.dedent('''\
                     In a release configuration, assertions are not enabled. Assertions can help catch
                     issues when compiling but it will increase compile times by 15-20%%.
 
                     '''),
-                    **BOOL_ARGS)
-parser.add_argument('-b',
-                    '--build-folder',
-                    help=textwrap.dedent('''\
+    **BOOL_ARGS,
+)
+parser.add_argument(
+    '-b',
+    '--build-folder',
+    help=textwrap.dedent('''\
                     By default, the script will create a "build/llvm" folder in the same folder as this
                     script and build each requested stage within that containing folder. To change the
                     location of the containing build folder, pass it to this parameter. This can be either
                     an absolute or relative path.
 
                     '''),
-                    type=str)
-parser.add_argument('--build-targets',
-                    default=['all'],
-                    help=textwrap.dedent('''\
+    type=str,
+)
+parser.add_argument(
+    '--build-targets',
+    default=['all'],
+    help=textwrap.dedent('''\
                     By default, the 'all' target is used as the build target for the final stage. With
                     this option, targets such as 'distribution' could be used to generate a slimmer
                     toolchain or targets such as 'clang' or 'llvm-ar' could be used to just test building
@@ -58,9 +74,11 @@ parser.add_argument('--build-targets',
 
                     NOTE: This only applies to the final stage build to avoid complicating tc-build internals.
                     '''),
-                    nargs='+')
-parser.add_argument('--bolt',
-                    help=textwrap.dedent('''\
+    nargs='+',
+)
+parser.add_argument(
+    '--bolt',
+    help=textwrap.dedent('''\
                     Optimize the final clang binary with BOLT (Binary Optimization and Layout Tool), which can
                     often improve compile time performance by 5-7%% on average.
 
@@ -107,9 +125,11 @@ parser.add_argument('--bolt',
                                 or run build-llvm.py without '--bolt'.
 
                     '''),
-                    action='store_true')
-opt_options.add_argument('--build-stage1-only',
-                         help=textwrap.dedent('''\
+    action='store_true',
+)
+opt_options.add_argument(
+    '--build-stage1-only',
+    help=textwrap.dedent('''\
                     By default, the script does a multi-stage build: it builds a more lightweight version of
                     LLVM first (stage 1) then uses that build to build the full toolchain (stage 2). This
                     is also known as bootstrapping.
@@ -119,8 +139,9 @@ opt_options.add_argument('--build-stage1-only',
                     use. However, if your system is slow or can't handle 2+ stage builds, you may need this flag.
 
                          '''),
-                         action='store_true')
-# yapf: disable
+    action='store_true',
+)
+# fmt: off
 parser.add_argument('--build-type',
                     metavar='BUILD_TYPE',
                     help=textwrap.dedent('''\
@@ -133,9 +154,10 @@ parser.add_argument('--build-type',
                     '''),
                     type=str,
                     choices=['Release', 'Debug', 'RelWithDebInfo', 'MinSizeRel'])
-# yapf: enable
-parser.add_argument('--check-targets',
-                    help=textwrap.dedent('''\
+# fmt: on
+parser.add_argument(
+    '--check-targets',
+    help=textwrap.dedent('''\
                     By default, no testing is run on the toolchain. If you would like to run unit/regression
                     tests, use this parameter to specify a list of check targets to run with ninja. Common
                     ones include check-llvm, check-clang, and check-lld.
@@ -145,10 +167,12 @@ parser.add_argument('--check-targets',
                     Example: '--check-targets clang llvm' will make ninja invokve 'check-clang' and 'check-llvm'.
 
                     '''),
-                    nargs='+')
-parser.add_argument('-D',
-                    '--defines',
-                    help=textwrap.dedent('''\
+    nargs='+',
+)
+parser.add_argument(
+    '-D',
+    '--defines',
+    help=textwrap.dedent('''\
                     Specify additional cmake values. These will be applied to all cmake invocations.
 
                     Example: -D LLVM_PARALLEL_COMPILE_JOBS=2 LLVM_PARALLEL_LINK_JOBS=2
@@ -157,10 +181,36 @@ parser.add_argument('-D',
                     the options to this script correspond to cmake values.
 
                     '''),
-                    nargs='+')
-parser.add_argument('-f',
-                    '--full-toolchain',
-                    help=textwrap.dedent('''\
+    nargs='+',
+)
+parser.add_argument(
+    '--distribution-profile',
+    help=textwrap.dedent('''\
+                    Smartly set value of LLVM_DISTRIBUTION_COMPONENTS for final build stage. Use in
+                    combination with
+
+                            --build-targets distribution
+                            --install-targets distribution
+
+                    to generate a smaller toolchain installation.
+
+                    Accepts the following values:
+
+                        none      - do not set LLVM_DISTRIBUTION_COMPONENTS at all
+                        bootstrap - components needed to build LLVM itself
+                        kernel    - components needed to build the Linux kernel
+                        rust      - components needed to build the Rust toolchain via build-rust.py
+
+                    The default is 'none' when '--full-toolchain' is enabled, 'kernel' if not.
+
+                    '''),
+    type=str,
+    choices=VALID_DISTRIBUTION_PROFILES,
+)
+parser.add_argument(
+    '-f',
+    '--full-toolchain',
+    help=textwrap.dedent('''\
                     By default, the script tunes LLVM for building the Linux kernel by disabling several
                     projects, targets, and configuration options, which speeds up build times but limits
                     how the toolchain could be used.
@@ -172,18 +222,22 @@ parser.add_argument('-f',
                     system-wide toolchain.
 
                     '''),
-                    action='store_true')
-parser.add_argument('-i',
-                    '--install-folder',
-                    help=textwrap.dedent('''\
+    action='store_true',
+)
+parser.add_argument(
+    '-i',
+    '--install-folder',
+    help=textwrap.dedent('''\
                     By default, the script will leave the toolchain in its build folder. To install it
                     outside the build folder for persistent use, pass the installation location that you
                     desire to this parameter. This can be either an absolute or relative path.
 
                     '''),
-                    type=str)
-parser.add_argument('--install-targets',
-                    help=textwrap.dedent('''\
+    type=str,
+)
+parser.add_argument(
+    '--install-targets',
+    help=textwrap.dedent('''\
                     By default, the script will just run the 'install' target to install the toolchain to
                     the desired prefix. To produce a slimmer toolchain, specify the desired targets to
                     install using this options.
@@ -194,30 +248,36 @@ parser.add_argument('--install-targets',
                              'install-lld'.
 
                     '''),
-                    nargs='+')
-parser.add_argument('-l',
-                    '--llvm-folder',
-                    help=textwrap.dedent('''\
+    nargs='+',
+)
+parser.add_argument(
+    '-l',
+    '--llvm-folder',
+    help=textwrap.dedent('''\
                     By default, the script will clone the llvm-project into the tc-build repo. If you have
                     another LLVM checkout that you would like to work out of, pass it to this parameter.
                     This can either be an absolute or relative path. Implies '--no-update'. When this
-                    option is supplied, '--ref' and '--use-good-revison' do nothing, as the script does
+                    option is supplied, '--ref' and '--use-good-revision' do nothing, as the script does
                     not manipulate a repository it does not own.
 
                     '''),
-                    type=str)
-parser.add_argument('-L',
-                    '--linux-folder',
-                    help=textwrap.dedent('''\
+    type=str,
+)
+parser.add_argument(
+    '-L',
+    '--linux-folder',
+    help=textwrap.dedent('''\
                     If building with PGO, use this kernel source for building profiles instead of downloading
                     a tarball from kernel.org. This should be the full or relative path to a complete kernel
                     source directory, not a tarball or zip file.
 
                     '''),
-                    type=str)
-parser.add_argument('--lto',
-                    metavar='LTO_TYPE',
-                    help=textwrap.dedent('''\
+    type=str,
+)
+parser.add_argument(
+    '--lto',
+    metavar='LTO_TYPE',
+    help=textwrap.dedent('''\
                     Build the final compiler with either ThinLTO (thin) or full LTO (full), which can
                     often improve compile time performance by 3-5%% on average.
 
@@ -234,19 +294,33 @@ parser.add_argument('--lto',
                     https://clang.llvm.org/docs/ThinLTO.html
 
                     '''),
-                    type=str,
-                    choices=['thin', 'full'])
-parser.add_argument('-n',
-                    '--no-update',
-                    help=textwrap.dedent('''\
+    type=str,
+    choices=['thin', 'full'],
+)
+parser.add_argument(
+    '-m',
+    '--multicall',
+    help=textwrap.dedent('''\
+                    Build LLVM as a multicall binary via the LLVM_TOOL_LLVM_DRIVER_BUILD CMake option.
+                    This results in a much smaller installation on disk.
+
+                    '''),
+    action='store_true',
+)
+parser.add_argument(
+    '-n',
+    '--no-update',
+    help=textwrap.dedent('''\
                     By default, the script always updates the LLVM repo before building. This prevents
                     that, which can be helpful during something like bisecting or manually managing the
                     repo to pin it to a particular revision.
 
                     '''),
-                    action='store_true')
-parser.add_argument('--no-ccache',
-                    help=textwrap.dedent('''\
+    action='store_true',
+)
+parser.add_argument(
+    '--no-ccache',
+    help=textwrap.dedent('''\
                     By default, the script adds LLVM_CCACHE_BUILD to the cmake options so that ccache is
                     used for the stage one build. This helps speed up compiles but it is only useful for
                     stage one, which is built using the host compiler, which usually does not change,
@@ -257,10 +331,12 @@ parser.add_argument('--no-ccache',
                     could be useful for benchmarking clean builds.
 
                     '''),
-                    action='store_true')
-parser.add_argument('-p',
-                    '--projects',
-                    help=textwrap.dedent('''\
+    action='store_true',
+)
+parser.add_argument(
+    '-p',
+    '--projects',
+    help=textwrap.dedent('''\
                     Currently, the script only enables the clang, compiler-rt, lld, and polly folders in LLVM.
                     If you would like to override this, you can use this parameter and supply a list that is
                     supported by LLVM_ENABLE_PROJECTS.
@@ -270,10 +346,12 @@ parser.add_argument('-p',
                     Example: -p clang lld polly
 
                     '''),
-                    nargs='+')
-opt_options.add_argument('--pgo',
-                         metavar='PGO_BENCHMARK',
-                         help=textwrap.dedent('''\
+    nargs='+',
+)
+opt_options.add_argument(
+    '--pgo',
+    metavar='PGO_BENCHMARK',
+    help=textwrap.dedent('''\
                     Build the final compiler with Profile Guided Optimization, which can often improve compile
                     time performance by 15-20%% on average. The script will:
 
@@ -317,26 +395,30 @@ opt_options.add_argument('--pgo',
                     See https://llvm.org/docs/HowToBuildWithPGO.html for more information.
 
                          '''),
-                         nargs='+',
-                         choices=[
-                             'kernel-defconfig',
-                             'kernel-allmodconfig',
-                             'kernel-allyesconfig',
-                             'kernel-defconfig-slim',
-                             'kernel-allmodconfig-slim',
-                             'kernel-allyesconfig-slim',
-                             'llvm',
-                         ])
-parser.add_argument('--quiet-cmake',
-                    help=textwrap.dedent('''\
+    nargs='+',
+    choices=[
+        'kernel-defconfig',
+        'kernel-allmodconfig',
+        'kernel-allyesconfig',
+        'kernel-defconfig-slim',
+        'kernel-allmodconfig-slim',
+        'kernel-allyesconfig-slim',
+        'llvm',
+    ],
+)
+parser.add_argument(
+    '--quiet-cmake',
+    help=textwrap.dedent('''\
                     By default, the script shows all output from cmake. When this option is enabled, the
                     invocations of cmake will only show warnings and errors.
 
                     '''),
-                    action='store_true')
-parser.add_argument('-r',
-                    '--ref',
-                    help=textwrap.dedent('''\
+    action='store_true',
+)
+parser.add_argument(
+    '-r',
+    '--ref',
+    help=textwrap.dedent('''\
                     By default, the script builds the main branch (tip of tree) of LLVM. If you would
                     like to build an older branch, use this parameter. This may be helpful in tracking
                     down an older bug to properly bisect. This value is just passed along to 'git checkout'
@@ -346,11 +428,13 @@ parser.add_argument('-r',
                     does not own.
 
                     '''),
-                    default='clang-21',
-                    type=str)
-clone_options.add_argument('-s',
-                           '--shallow-clone',
-                           help=textwrap.dedent('''\
+    default='main',
+    type=str,
+)
+clone_options.add_argument(
+    '-s',
+    '--shallow-clone',
+    help=textwrap.dedent('''\
                     Only fetch the required objects and omit history when cloning the LLVM repo. This
                     option is only used for the initial clone, not subsequent fetches. This can break
                     the script's ability to automatically update the repo to newer revisions or branches
@@ -364,22 +448,26 @@ clone_options.add_argument('-s',
 
                     1. This cannot be used with '--use-good-revision'.
 
-                    2. When no '--branch' is specified, only main is fetched. To work with other branches,
-                       a branch other than main needs to be specified when the repo is first cloned.
+                    2. Only the ref specified by '--ref' (main by default) is fetched. To work with a
+                       different ref, the repo has to be cloned again with that ref.
 
                            '''),
-                           action='store_true')
-parser.add_argument('--show-build-commands',
-                    help=textwrap.dedent('''\
+    action='store_true',
+)
+parser.add_argument(
+    '--show-build-commands',
+    help=textwrap.dedent('''\
                     By default, the script only shows the output of the comands it is running. When this option
                     is enabled, the invocations of cmake, ninja, and make will be shown to help with
                     reproducing issues outside of the script.
 
                     '''),
-                    action='store_true')
-parser.add_argument('-t',
-                    '--targets',
-                    help=textwrap.dedent('''\
+    action='store_true',
+)
+parser.add_argument(
+    '-t',
+    '--targets',
+    help=textwrap.dedent('''\
                     LLVM is multitargeted by default. Currently, this script only enables the arm32, aarch64,
                     bpf, mips, powerpc, riscv, s390, and x86 backends because that's what the Linux kernel is
                     currently concerned with. If you would like to override this, you can use this parameter
@@ -390,9 +478,11 @@ parser.add_argument('-t',
                     Example: -t AArch64 ARM X86
 
                     '''),
-                    nargs='+')
-clone_options.add_argument('--use-good-revision',
-                           help=textwrap.dedent('''\
+    nargs='+',
+)
+clone_options.add_argument(
+    '--use-good-revision',
+    help=textwrap.dedent('''\
                     By default, the script updates LLVM to the latest tip of tree revision, which may at times be
                     broken or not work right. With this option, it will checkout a known good revision of LLVM
                     that builds and works properly. If you use this option often, please remember to update the
@@ -401,11 +491,13 @@ clone_options.add_argument('--use-good-revision',
                     NOTE: This option cannot be used with '--shallow-clone'.
 
                            '''),
-                           action='store_const',
-                           const=GOOD_REVISION,
-                           dest='ref')
-parser.add_argument('--vendor-string',
-                    help=textwrap.dedent('''\
+    action='store_const',
+    const=GOOD_REVISION,
+    dest='ref',
+)
+parser.add_argument(
+    '--vendor-string',
+    help=textwrap.dedent('''\
                     Add this value to the clang and ld.lld version string (like "Apple clang version..."
                     or "Android clang version..."). Useful when reverting or applying patches on top
                     of upstream clang to differentiate a toolchain built with this script from
@@ -414,8 +506,9 @@ parser.add_argument('--vendor-string',
                     override this and have no vendor in the version string.
 
                     '''),
-                    type=str,
-                    default='ClangBuiltLinux')
+    type=str,
+    default='ClangBuiltLinux',
+)
 args = parser.parse_args()
 
 # Start tracking time that the script takes
@@ -437,11 +530,11 @@ if args.bolt or (args.pgo and [x for x in args.pgo if 'kernel' in x]):
     lsm = LinuxSourceManager()
     if args.linux_folder:
         if not (linux_folder := Path(args.linux_folder).resolve()).exists():
-            raise RuntimeError(f"Provided Linux folder ('{args.linux_folder}') does not exist?")
+            msg = f"Provided Linux folder ('{args.linux_folder}') does not exist?"
+            raise RuntimeError(msg)
         if not Path(linux_folder, 'Makefile').exists():
-            raise RuntimeError(
-                f"Provided Linux folder ('{args.linux_folder}') does not appear to be a Linux kernel tree?"
-            )
+            msg = f"Provided Linux folder ('{args.linux_folder}') does not appear to be a Linux kernel tree?"
+            raise RuntimeError(msg)
 
         lsm.location = linux_folder
 
@@ -449,18 +542,19 @@ if args.bolt or (args.pgo and [x for x in args.pgo if 'kernel' in x]):
         # version in mind. If the user supplied their own Linux source, make
         # sure it is recent enough that the kernel builder will work.
         if (linux_version := lsm.get_version()) < KernelBuilder.MINIMUM_SUPPORTED_VERSION:
-            found_version = '.'.join(map(str, linux_version))
-            minimum_version = '.'.join(map(str, KernelBuilder.MINIMUM_SUPPORTED_VERSION))
-            raise RuntimeError(
-                f"Supplied kernel source version ('{found_version}') is older than the minimum required version ('{minimum_version}'), provide a newer version!"
-            )
+            found_version = '.'.join(str(x) for x in linux_version)
+            minimum_version = '.'.join(str(x) for x in KernelBuilder.MINIMUM_SUPPORTED_VERSION)
+            msg = f"Supplied kernel source version ('{found_version}') is older than the minimum required version ('{minimum_version}'), provide a newer version!"
+            raise RuntimeError(msg)
     else:
-        # Turns (6, 2, 0) into 6.2 and (6, 2, 1) into 6.2.1 to follow tarball names
-        ver_str = '.'.join(str(x) for x in DEFAULT_KERNEL_FOR_PGO if x)
-        lsm.location = Path(src_folder, f"linux-{ver_str}")
+        # Turns (x, y, 0) into x.y and (x, y, 1) into x.y.1 to follow tarball names
+        ver_parts = [str(x) for x in DEFAULT_KERNEL_FOR_PGO]
+        if ver_parts[2] == '0':
+            ver_parts.remove('0')
+        lsm.location = Path(src_folder, f"linux-{'.'.join(ver_parts)}")
         lsm.patches = list(src_folder.glob('*.patch'))
 
-        lsm.tarball.base_download_url = 'https://cdn.kernel.org/pub/linux/kernel/v6.x'
+        lsm.tarball.base_download_url = f"https://cdn.kernel.org/pub/linux/kernel/v{ver_parts[0]}.x"
         lsm.tarball.local_location = lsm.location.with_name(f"{lsm.location.name}.tar.xz")
         lsm.tarball.remote_checksum_name = 'sha256sums.asc'
 
@@ -470,7 +564,8 @@ if args.bolt or (args.pgo and [x for x in args.pgo if 'kernel' in x]):
 # Validate and configure LLVM source
 if args.llvm_folder:
     if not (llvm_folder := Path(args.llvm_folder).resolve()).exists():
-        raise RuntimeError(f"Provided LLVM folder ('{args.llvm_folder}') does not exist?")
+        msg = f"Provided LLVM folder ('{args.llvm_folder}') does not exist?"
+        raise RuntimeError(msg)
 else:
     llvm_folder = Path(src_folder, 'llvm-project')
 llvm_source = LLVMSourceManager(llvm_folder)
@@ -493,7 +588,7 @@ def_llvm_builder_cls = LLVMBuilder if args.full_toolchain else LLVMSlimBuilder
 final = def_llvm_builder_cls()
 final.folders.source = llvm_folder
 if args.targets:
-    final.targets = args.targets
+    final.targets = sorted(set(args.targets))
     final.validate_targets()
 else:
     final.targets = ['all'] if args.full_toolchain else llvm_source.default_targets()
@@ -516,32 +611,37 @@ if args.bolt and not final.can_use_perf():
         )
         tc_build.utils.print_warning('https://github.com/llvm/llvm-project/issues/55004')
         tc_build.utils.print_warning(
-            "Consider adding '--assertions' if there are any failures during the BOLT stage.")
+            "Consider adding '--assertions' if there are any failures during the BOLT stage."
+        )
         warned = True
     if platform.machine() != 'x86_64':
         tc_build.utils.print_warning(
-            'Using BOLT in instrumentation mode may not work on non-x86_64 machines:')
+            'Using BOLT in instrumentation mode may not work on non-x86_64 machines:'
+        )
         tc_build.utils.print_warning('https://github.com/llvm/llvm-project/issues/55005')
         tc_build.utils.print_warning(
-            "Consider dropping '--bolt' if there are any failures during the BOLT stage.")
+            "Consider dropping '--bolt' if there are any failures during the BOLT stage."
+        )
         warned = True
     if warned:
         tc_build.utils.print_warning('Continuing in 5 seconds, hit Ctrl-C to cancel...')
         time.sleep(5)
 
 # Figure out unconditional cmake defines from input
-common_cmake_defines = {}
+common_cmake_defines: CmakeVars = {}
 if args.assertions:
     common_cmake_defines['LLVM_ENABLE_ASSERTIONS'] = 'ON'
 if args.vendor_string:
     common_cmake_defines['CLANG_VENDOR'] = args.vendor_string
     common_cmake_defines['LLD_VENDOR'] = args.vendor_string
+if args.multicall:
+    common_cmake_defines['LLVM_TOOL_LLVM_DRIVER_BUILD'] = 'ON'
 if args.defines:
     defines = dict(define.split('=', 1) for define in args.defines)
-    common_cmake_defines.update(defines)
+    common_cmake_defines.update(defines)  # ty: ignore[invalid-argument-type]
 
 # Build bootstrap compiler if user did not request a single stage build
-if (use_bootstrap := not args.build_stage1_only):
+if use_bootstrap := not args.build_stage1_only:
     tc_build.utils.print_header('Building LLVM (bootstrap)')
 
     bootstrap = LLVMBootstrapBuilder()
@@ -565,10 +665,9 @@ if (use_bootstrap := not args.build_stage1_only):
 # If the user did not specify CMAKE_C_FLAGS or CMAKE_CXX_FLAGS, add them as empty
 # to paste stage 2 to ensure there are no environment issues (since CFLAGS and CXXFLAGS
 # are taken into account by cmake)
-c_flag_defines = ['CMAKE_C_FLAGS', 'CMAKE_CXX_FLAGS']
-for define in c_flag_defines:
-    if define not in common_cmake_defines:
-        common_cmake_defines[define] = ''
+common_cmake_defines.setdefault('CMAKE_C_FLAGS', '')
+common_cmake_defines.setdefault('CMAKE_CXX_FLAGS', '')
+
 # The user's build type should be taken into account past the bootstrap compiler
 if args.build_type:
     common_cmake_defines['CMAKE_BUILD_TYPE'] = args.build_type
@@ -581,7 +680,8 @@ if args.pgo:
     instrumented.build_targets = ['all' if args.full_toolchain else 'distribution']
     instrumented.cmake_defines.update(common_cmake_defines)
     # We run the tests on the instrumented stage if the LLVM benchmark was enabled
-    instrumented.check_targets = args.check_targets if 'llvm' in args.pgo else None
+    if 'llvm' in args.pgo:
+        instrumented.check_targets = args.check_targets
     instrumented.folders.build = Path(build_folder, 'instrumented')
     instrumented.folders.source = llvm_folder
     instrumented.projects = final.projects
@@ -619,13 +719,14 @@ if args.pgo:
     # If the user specified both a full and slim build of the same type, remove
     # the full build and warn them.
     pgo_targets = [s.replace('kernel-', '') for s in args.pgo if 'kernel-' in s]
-    for pgo_target in pgo_targets:
+    for pgo_target in set(pgo_targets):
         if 'slim' not in pgo_target:
             continue
         config_target = pgo_target.split('-')[0]
         if config_target in pgo_targets:
             tc_build.utils.print_warning(
-                f"Both full and slim were specified for {config_target}, ignoring full...")
+                f"Both full and slim were specified for {config_target}, ignoring full..."
+            )
             pgo_targets.remove(config_target)
 
     if pgo_targets:
@@ -671,6 +772,7 @@ if args.pgo:
     for pgo_builder in pgo_builders:
         if hasattr(pgo_builder, 'configure') and callable(pgo_builder.configure):
             tc_build.utils.print_info('Building LLVM for profiling...')
+            # We know this is safe to call with no arguments
             pgo_builder.configure()
         pgo_builder.build()
 
@@ -680,8 +782,11 @@ if args.pgo:
 final.build_targets = args.build_targets
 final.check_targets = args.check_targets
 final.cmake_defines.update(common_cmake_defines)
+if args.distribution_profile:
+    final.distribution_profile = args.distribution_profile
 final.folders.build = Path(build_folder, 'final')
-final.folders.install = Path(args.install_folder).resolve() if args.install_folder else None
+if args.install_folder:
+    final.folders.install = Path(args.install_folder).resolve()
 final.install_targets = args.install_targets
 final.quiet_cmake = args.quiet_cmake
 final.show_commands = args.show_build_commands
@@ -711,13 +816,9 @@ else:
 
 if args.bolt:
     final.bolt = True
-    final.bolt_builder = LLVMKernelBuilder()
     final.bolt_builder.folders.build = Path(build_folder, 'linux')
     final.bolt_builder.folders.source = lsm.location
-    if final.host_target_is_enabled():
-        llvm_targets = [final.host_target()]
-    else:
-        llvm_targets = final.targets[0:1]
+    llvm_targets = [final.host_target()] if final.host_target_is_enabled() else final.targets[0:1]
     final.bolt_builder.matrix['defconfig'] = llvm_targets
 
 tc_build.utils.print_header('Building LLVM (final)')

@@ -28,7 +28,7 @@ LLVM_REPO="Alchemist-LLVM"
 GH_REPO="$GH_OWNER/$LLVM_REPO"
 REPO_URL="https://github.com/$GH_REPO"
 
-CLANG_VERSIONS=(${*:-22 23 24})
+CLANG_VERSIONS=(${*:-22})
 
 TG_TOKEN="${TG_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"

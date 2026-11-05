@@ -709,6 +709,37 @@ if args.mlgo:
             except OSError as err:
                 tc_build.utils.print_warning(f'Could not patch {xla_cmake}: {err}')
 
+        # Patch llvm/cmake/modules/TensorFlowCompile.cmake for TensorFlow 2.16+
+        # Modern TensorFlow splits AOT compilation output into .o, _constants.o, and _metadata.o.
+        # Upstream LLVM only registers .o, leaving constant buffer symbols undefined during ThinLTO linking.
+        tf_compile_cmake = llvm_folder / 'llvm' / 'cmake' / 'modules' / 'TensorFlowCompile.cmake'
+        if tf_compile_cmake.exists():
+            try:
+                tf_cmake_content = tf_compile_cmake.read_text(encoding='utf-8')
+                if 'constants_file' not in tf_cmake_content:
+                    target_cmd = 'add_custom_command(OUTPUT ${obj_file} ${hdr_file}'
+                    replacement_cmd = (
+                        'set(constants_file ${prefix}_constants.o)\n'
+                        '  set(metadata_file ${prefix}_metadata.o)\n'
+                        '  add_custom_command(OUTPUT ${obj_file} ${hdr_file} ${constants_file} ${metadata_file}'
+                    )
+                    target_objs = (
+                        'set(GENERATED_OBJS ${GENERATED_OBJS} ${obj_file} PARENT_SCOPE)\n'
+                        '  set_source_files_properties(${obj_file} PROPERTIES'
+                    )
+                    replacement_objs = (
+                        'set(all_gen_objs ${obj_file} ${constants_file} ${metadata_file})\n'
+                        '  set(GENERATED_OBJS ${GENERATED_OBJS} ${all_gen_objs} PARENT_SCOPE)\n'
+                        '  set_source_files_properties(${all_gen_objs} PROPERTIES'
+                    )
+                    patched_content = tf_cmake_content.replace(target_cmd, replacement_cmd, 1).replace(
+                        target_objs, replacement_objs, 1
+                    )
+                    if patched_content != tf_cmake_content:
+                        tf_compile_cmake.write_text(patched_content, encoding='utf-8')
+            except OSError as err:
+                tc_build.utils.print_warning(f'Could not patch {tf_compile_cmake}: {err}')
+
 # Build bootstrap compiler if user did not request a single stage build
 if use_bootstrap := not args.build_stage1_only:
     tc_build.utils.print_header('Building LLVM (bootstrap)')

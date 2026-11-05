@@ -688,7 +688,10 @@ if args.mlgo:
             absl_stub_content = (
                 '#include <cstdlib>\n'
                 '#include <iostream>\n'
-                '#include "absl/base/config.h"\n\n'
+                '#include <memory>\n'
+                '#include "absl/base/config.h"\n'
+                '#include "absl/container/internal/raw_hash_set.h"\n'
+                '#include "absl/synchronization/mutex.h"\n\n'
                 'namespace absl {\n'
                 'ABSL_NAMESPACE_BEGIN\n\n'
                 'namespace log_internal {\n'
@@ -709,12 +712,14 @@ if args.mlgo:
                 '  std::abort();\n'
                 '}\n'
                 '} // namespace log_internal\n\n'
-                'struct Mutex {\n'
-                '  void lock();\n'
-                '  void unlock();\n'
-                '};\n\n'
                 'void Mutex::lock() {}\n'
                 'void Mutex::unlock() {}\n\n'
+                'namespace container_internal {\n\n'
+                'void IterateOverFullSlots(const CommonFields&, size_t,\n'
+                '                          absl::FunctionRef<void(const ctrl_t*, void*)>) {}\n\n'
+                'template void DeallocateBackingArray<8ul, std::allocator<char>>(\n'
+                '    void*, size_t, ctrl_t*, size_t, size_t, bool);\n\n'
+                '} // namespace container_internal\n\n'
                 'ABSL_NAMESPACE_END\n'
                 '} // namespace absl\n'
             )
@@ -777,9 +782,18 @@ if args.mlgo:
                         '  set(GENERATED_OBJS ${GENERATED_OBJS} ${all_gen_objs} PARENT_SCOPE)\n'
                         '  set_source_files_properties(${all_gen_objs} PROPERTIES'
                     )
+                    target_triple = '--target_triple ${LLVM_HOST_TRIPLE}\n  )'
+                    replacement_triple = (
+                        '--target_triple ${LLVM_HOST_TRIPLE}\n'
+                        '    COMMAND ${Python3_EXECUTABLE} -c "import re; p=r\'${hdr_file}\'; '
+                        'c=open(p).read(); '
+                        'open(p,\'w\').write(re.sub(r\'static absl::flat_hash_map<std::string, void\\*> FunctionLibrarySymbolMap\\(\\) \\{[\\s\\S]*?\\n protected:\', '
+                        '\'static absl::flat_hash_map<std::string, void*> FunctionLibrarySymbolMap() {\\\\n    return {};\\\\n  }\\\\n protected:\', c))"\n'
+                        '  )'
+                    )
                     patched_content = tf_cmake_content.replace(target_cmd, replacement_cmd, 1).replace(
                         target_objs, replacement_objs, 1
-                    )
+                    ).replace(target_triple, replacement_triple, 1)
                     if patched_content != tf_cmake_content:
                         tf_compile_cmake.write_text(patched_content, encoding='utf-8')
             except OSError as err:

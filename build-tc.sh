@@ -492,9 +492,7 @@ for VER in "${CLANG_VERSIONS[@]}"; do
     test_kernel_arm64
     package_and_publish "$VER" "$CURRENT_VER"
 
-    local aosp_rev
     aosp_rev="$(get_aosp_info "$VER")"
-    local base_desc
     base_desc="$(get_aosp_base_desc "$VER" "$aosp_rev")"
 
     RESULTS+=("• <b>Clang ${VER} (<code>${CURRENT_VER}</code>):</b> ✅ Built & Published (<code>${aosp_rev}</code>)")

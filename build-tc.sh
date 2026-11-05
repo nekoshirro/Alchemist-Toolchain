@@ -488,15 +488,6 @@ for VER in "${CLANG_VERSIONS[@]}"; do
 <b>Profile:</b> $PIPELINE_PROFILE"
 
     build_single_llvm "$LLVM_REF"
-    if [[ "$ENABLE_MLGO" -eq 1 ]]; then
-        local tf_dir
-        tf_dir=$(python3 -c "import tensorflow as tf, os; print(os.path.dirname(tf.__file__))" 2>/dev/null || true)
-        if [[ -n "$tf_dir" && -d "$tf_dir" ]]; then
-            msg "$LLVM_NAME: Bundling TensorFlow runtime libraries into install directory for MLGO..."
-            mkdir -p "$install/lib"
-            cp -d "$tf_dir"/libtensorflow_framework.so* "$install/lib/" 2>/dev/null || true
-        fi
-    fi
     build_single_binutils
     test_kernel_arm64
     package_and_publish "$VER" "$CURRENT_VER"

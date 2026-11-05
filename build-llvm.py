@@ -674,38 +674,83 @@ if args.mlgo:
         common_cmake_defines['LLVM_RAEVICT_MODEL_PATH'] = 'autogenerate'
 
     if tf_path and tf_path.is_dir():
-        # Ensure libtensorflow_framework.so symlink exists if only libtensorflow_framework.so.X is present
-        so_symlink = tf_path / 'libtensorflow_framework.so'
-        if not so_symlink.exists():
-            for candidate in sorted(tf_path.glob('libtensorflow_framework.so.*'), reverse=True):
-                try:
-                    so_symlink.symlink_to(candidate.name)
-                    break
-                except OSError:
-                    pass
-
-        # Patch tensorflow/xla_aot_runtime_src/CMakeLists.txt to link libtensorflow_framework.
-        # We attach the interface link library specifically to the tf_xla_runtime target so that
-        # only targets depending on MLGO inherit -ltensorflow_framework. This avoids passing
-        # -ltensorflow_framework globally via CMAKE_EXE_LINKER_FLAGS, which pollutes build-time
-        # host tools like llvm-min-tblgen / llvm-tblgen with conflicting embedded LLVM symbols.
-        xla_cmake = tf_path / 'xla_aot_runtime_src' / 'CMakeLists.txt'
-        if xla_cmake.exists():
+        # Setup self-contained static tf_xla_runtime.
+        # Upstream TensorFlow's xla_aot_runtime_src indiscriminately compiles all .cc files (including
+        # concurrency and convolution), creating runtime dependencies on abseil and libtensorflow_framework.so.
+        # In contrast, AOT-compiled MLGO models only require XlaCompiledCpuFunction and memory allocation.
+        # Linking libtensorflow_framework.so introduces an embedded duplicate LLVM instance that causes
+        # command-line registry collisions and destructor conflicts on exit.
+        # By providing a minimal absl stub and compiling only the essential runtime files into a static
+        # libtf_xla_runtime.a, LLVM becomes 100% self-contained and free of runtime TensorFlow dependencies.
+        xla_dir = tf_path / 'xla_aot_runtime_src'
+        if xla_dir.is_dir():
+            absl_stub_file = xla_dir / 'absl_stub.cc'
+            absl_stub_content = (
+                '#include <cstdlib>\n'
+                '#include <iostream>\n'
+                '#include "absl/base/config.h"\n\n'
+                'namespace absl {\n'
+                'ABSL_NAMESPACE_BEGIN\n\n'
+                'namespace log_internal {\n'
+                'struct LogMessage {\n'
+                '  void Flush();\n'
+                '};\n'
+                'void LogMessage::Flush() {}\n\n'
+                'struct LogMessageFatal {\n'
+                '  LogMessageFatal(const char* file, int line, const char* msg);\n'
+                '  ~LogMessageFatal();\n'
+                '};\n\n'
+                'LogMessageFatal::LogMessageFatal(const char* file, int line, const char* msg) {\n'
+                '  if (msg) {\n'
+                '    std::cerr << "Check failed: " << msg << " at " << file << ":" << line << std::endl;\n'
+                '  }\n'
+                '}\n\n'
+                'LogMessageFatal::~LogMessageFatal() {\n'
+                '  std::abort();\n'
+                '}\n'
+                '} // namespace log_internal\n\n'
+                'struct Mutex {\n'
+                '  void lock();\n'
+                '  void unlock();\n'
+                '};\n\n'
+                'void Mutex::lock() {}\n'
+                'void Mutex::unlock() {}\n\n'
+                'ABSL_NAMESPACE_END\n'
+                '} // namespace absl\n'
+            )
             try:
-                cmake_content = xla_cmake.read_text(encoding='utf-8')
-                filtered_lines = [
-                    line for line in cmake_content.splitlines()
-                    if 'target_link_libraries(tf_xla_runtime' not in line
-                    and '# Added by Alchemist' not in line
-                ]
-                filtered_lines.append(
-                    '# Added by Alchemist for MLGO Abseil runtime symbol resolution'
-                )
-                filtered_lines.append(
-                    'target_link_libraries(tf_xla_runtime INTERFACE '
-                    '-L${CMAKE_CURRENT_SOURCE_DIR}/.. -ltensorflow_framework)'
-                )
-                xla_cmake.write_text('\n'.join(filtered_lines) + '\n', encoding='utf-8')
+                absl_stub_file.write_text(absl_stub_content, encoding='utf-8')
+            except OSError as err:
+                tc_build.utils.print_warning(f'Could not write {absl_stub_file}: {err}')
+
+            xla_cmake = xla_dir / 'CMakeLists.txt'
+            cmake_text = (
+                'cmake_minimum_required(VERSION 3.5)\n\n'
+                'set(TF_RUNTIME_SRC\n'
+                '  "${CMAKE_CURRENT_SOURCE_DIR}/tensorflow/compiler/tf2xla/allocator.cc"\n'
+                '  "${CMAKE_CURRENT_SOURCE_DIR}/tensorflow/compiler/tf2xla/xla_compiled_cpu_function.cc"\n'
+                '  "${CMAKE_CURRENT_SOURCE_DIR}/xla/backends/cpu/runtime/rng_state_lib.cc"\n'
+                '  "${CMAKE_CURRENT_SOURCE_DIR}/xla/service/custom_call_status.cc"\n'
+                '  "${CMAKE_CURRENT_SOURCE_DIR}/xla/executable_run_options.cc"\n'
+                '  "${CMAKE_CURRENT_SOURCE_DIR}/absl_stub.cc"\n'
+                ')\n\n'
+                'add_library(tf_xla_runtime_objects OBJECT\n'
+                '  ${TF_RUNTIME_SRC}\n'
+                ')\n\n'
+                'target_include_directories(tf_xla_runtime_objects PRIVATE ../include)\n'
+                'target_compile_options(tf_xla_runtime_objects PRIVATE\n'
+                '  -ftemplate-backtrace-limit=0\n'
+                '  -Wno-ignored-attributes\n'
+                '  -Wno-deprecated-copy\n'
+                '  -Wno-cast-qual\n'
+                '  -Wno-sign-compare\n'
+                ')\n\n'
+                'add_library(tf_xla_runtime STATIC\n'
+                '  $<TARGET_OBJECTS:tf_xla_runtime_objects>\n'
+                ')\n'
+            )
+            try:
+                xla_cmake.write_text(cmake_text, encoding='utf-8')
             except OSError as err:
                 tc_build.utils.print_warning(f'Could not patch {xla_cmake}: {err}')
 
@@ -739,6 +784,67 @@ if args.mlgo:
                         tf_compile_cmake.write_text(patched_content, encoding='utf-8')
             except OSError as err:
                 tc_build.utils.print_warning(f'Could not patch {tf_compile_cmake}: {err}')
+
+        # Patch llvm/lib/Support/CommandLine.cpp to allow option overrides.
+        # libtensorflow_framework.so embeds an internal copy of LLVM which registers command-line
+        # options during static initialization. LLVM's default behavior is to abort with
+        # 'CommandLine Error: Option ... registered more than once!'. We permit idempotent option
+        # registration so host binaries linked against libtensorflow_framework don't crash on startup.
+        cl_cpp = llvm_folder / 'llvm' / 'lib' / 'Support' / 'CommandLine.cpp'
+        if cl_cpp.exists():
+            try:
+                cl_content = cl_cpp.read_text(encoding='utf-8')
+                target_add_literal = (
+                    '    if (!SC->OptionsMap.insert(std::make_pair(Name, &Opt)).second) {\n'
+                    '      errs() << ProgramName << ": CommandLine Error: Option \'" << Name\n'
+                    '             << "\' registered more than once!\\n";\n'
+                    '      report_fatal_error("inconsistency in registered CommandLine options");\n'
+                    '    }'
+                )
+                replacement_add_literal = '    SC->OptionsMap[Name] = &Opt;'
+
+                target_add_opt = (
+                    '      // Add argument to the argument map!\n'
+                    '      if (!SC->OptionsMap.insert(std::make_pair(O->ArgStr, O)).second) {\n'
+                    '        errs() << ProgramName << ": CommandLine Error: Option \'" << O->ArgStr\n'
+                    '               << "\' registered more than once!\\n";\n'
+                    '        HadErrors = true;\n'
+                    '      }'
+                )
+                replacement_add_opt = (
+                    '      // Add argument to the argument map!\n'
+                    '      SC->OptionsMap[O->ArgStr] = O;'
+                )
+
+                target_had_errors = (
+                    '    if (HadErrors)\n'
+                    '      report_fatal_error("inconsistency in registered CommandLine options");'
+                )
+                replacement_had_errors = '    (void)HadErrors;'
+
+                target_update = (
+                    '    if (!Sub.OptionsMap.insert(std::make_pair(NewName, O)).second) {\n'
+                    '      errs() << ProgramName << ": CommandLine Error: Option \'" << O->ArgStr\n'
+                    '             << "\' registered more than once!\\n";\n'
+                    '      report_fatal_error("inconsistency in registered CommandLine options");\n'
+                    '    }'
+                )
+                replacement_update = '    Sub.OptionsMap[NewName] = O;'
+
+                patched_cl = cl_content
+                if target_add_literal in patched_cl:
+                    patched_cl = patched_cl.replace(target_add_literal, replacement_add_literal, 1)
+                if target_add_opt in patched_cl:
+                    patched_cl = patched_cl.replace(target_add_opt, replacement_add_opt, 1)
+                if target_had_errors in patched_cl:
+                    patched_cl = patched_cl.replace(target_had_errors, replacement_had_errors, 1)
+                if target_update in patched_cl:
+                    patched_cl = patched_cl.replace(target_update, replacement_update, 1)
+
+                if patched_cl != cl_content:
+                    cl_cpp.write_text(patched_cl, encoding='utf-8')
+            except OSError as err:
+                tc_build.utils.print_warning(f'Could not patch {cl_cpp}: {err}')
 
 # Build bootstrap compiler if user did not request a single stage build
 if use_bootstrap := not args.build_stage1_only:
@@ -947,32 +1053,7 @@ if cache_file.exists():
 
 final.configure()
 
-if args.mlgo and tf_path and tf_path.is_dir():
-    # Pre-populate build lib directory with libtensorflow_framework.so*
-    # so tools running directly from build folder during build find it via RPATH
-    final_build_lib = Path(final.folders.build, 'lib')
-    final_build_lib.mkdir(parents=True, exist_ok=True)
-    for tf_file in tf_path.glob('libtensorflow_framework.so*'):
-        dest = final_build_lib / tf_file.name
-        if not dest.exists():
-            if tf_file.is_symlink():
-                dest.symlink_to(os.readlink(tf_file))
-            else:
-                shutil.copy2(tf_file, dest)
-
 final.build()
-
-if args.mlgo and tf_path and tf_path.is_dir() and tc_build.utils.path_is_set(final.folders.install):
-    install_lib = Path(final.folders.install, 'lib')
-    install_lib.mkdir(parents=True, exist_ok=True)
-    for tf_file in tf_path.glob('libtensorflow_framework.so*'):
-        dest = install_lib / tf_file.name
-        if not dest.exists():
-            tc_build.utils.print_info(f"Bundling {tf_file.name} to {install_lib}")
-            if tf_file.is_symlink():
-                dest.symlink_to(os.readlink(tf_file))
-            else:
-                shutil.copy2(tf_file, dest)
 
 final.show_install_info()
 

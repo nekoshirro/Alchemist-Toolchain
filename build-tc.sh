@@ -100,6 +100,7 @@ CURRENT_BUILD_TARGET=""
 
 on_exit() {
     local exit_code=$?
+    set +e
     sleep 0.5
     if [[ $exit_code -eq 130 ]]; then
         return 0
@@ -285,6 +286,8 @@ is_already_released() {
 import sys, json
 ver = sys.argv[1].lower()
 target = sys.argv[2].lower()
+if target == 'latest':
+    sys.exit(1)
 try:
     data = json.load(sys.stdin)
     for r in data:
@@ -317,16 +320,38 @@ test_kernel_arm64() {
     local linux="$src/$branch"
 
     msg "$LLVM_NAME: Verifying toolchain with Linux ARM64 defconfig test build..."
-    if [[ -d "$linux" ]]; then
-        git -C "$linux" fetch --depth=1 origin "$branch"
-        git -C "$linux" reset --hard FETCH_HEAD
-    else
+    if [[ -d "$linux/.git" ]]; then
+        if ! git -C "$linux" fetch --depth=1 origin "$branch"; then
+            warn "$LLVM_NAME: Kernel fetch failed, retrying once in 3s..."
+            sleep 3
+            if ! git -C "$linux" fetch --depth=1 origin "$branch"; then
+                warn "$LLVM_NAME: Kernel fetch failed again. Resetting kernel workspace..."
+                rm -rf "$linux"
+            fi
+        fi
+        if [[ -d "$linux/.git" ]]; then
+            git -C "$linux" reset --hard FETCH_HEAD
+        fi
+    fi
+
+    if [[ ! -d "$linux/.git" ]]; then
+        rm -rf "$linux"
         git clone \
             --branch "$branch" \
             --depth=1 \
             --single-branch \
             https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
-            "$linux"
+            "$linux" || {
+            warn "$LLVM_NAME: Kernel clone failed, cleaning up and retrying once in 3s..."
+            rm -rf "$linux"
+            sleep 3
+            git clone \
+                --branch "$branch" \
+                --depth=1 \
+                --single-branch \
+                https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git \
+                "$linux"
+        }
     fi
 
     cat <<EOF | env PYTHONPATH="$base" python3 -
@@ -357,9 +382,13 @@ build_single_llvm() {
 
     local total_ram_gb
     total_ram_gb=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo 4)
-    local link_jobs=$(( total_ram_gb / 4 ))
-    (( link_jobs < 1 )) && link_jobs=1
-    (( link_jobs > 4 )) && link_jobs=4
+    local link_jobs=$(( ${total_ram_gb:-4} / 4 ))
+    if (( link_jobs < 1 )); then
+        link_jobs=1
+    fi
+    if (( link_jobs > 4 )); then
+        link_jobs=4
+    fi
 
     "$base"/build-llvm.py \
         --vendor-string "$LLVM_NAME" \
@@ -382,6 +411,15 @@ package_and_publish() {
     local ver="$1"
     local llvm_ref="clang-${ver}"
     local current_ver="$2"
+    local aosp_rev="${3:-}"
+    local base_desc="${4:-}"
+
+    if [[ -z "$aosp_rev" ]]; then
+        aosp_rev="$(get_aosp_info "$ver")"
+    fi
+    if [[ -z "$base_desc" ]]; then
+        base_desc="$(get_aosp_base_desc "$ver" "$aosp_rev")"
+    fi
 
     local llvm_commit="unknown"
     local short_llvm_commit="unknown"
@@ -406,10 +444,6 @@ package_and_publish() {
     tar -C "$install" -cf - . | XZ_OPT='-9e -T0' xz -c > "$base/$asset_name"
 
     msg "$LLVM_NAME: Publishing $asset_name to GitHub Release $release_tag..."
-    local aosp_rev
-    aosp_rev="$(get_aosp_info "$ver")"
-    local base_desc
-    base_desc="$(get_aosp_base_desc "$ver" "$aosp_rev")"
 
     local notes_entry="Clang-${ver}: ${base_desc}
 Clang version: $clang_version
@@ -423,8 +457,10 @@ Builder commit: $builder_commit_url"
     if gh release view "$release_tag" --repo "$GH_REPO" &>/dev/null; then
         gh release upload "$release_tag" "$base/$asset_name" --repo "$GH_REPO" --clobber
         local existing_notes
-        existing_notes="$(gh release view "$release_tag" --repo "$GH_REPO" --json body -q .body)"
-        if ! grep -qF "Clang-${ver}" <<< "$existing_notes"; then
+        existing_notes="$(gh release view "$release_tag" --repo "$GH_REPO" --json body -q .body 2>/dev/null || echo "")"
+        if [[ -z "$existing_notes" ]]; then
+            gh release edit "$release_tag" --repo "$GH_REPO" --notes "$notes_entry"
+        elif ! grep -qF "Clang-${ver}" <<< "$existing_notes"; then
             gh release edit "$release_tag" --repo "$GH_REPO" --notes "$existing_notes
 
 $notes_entry"
@@ -490,10 +526,11 @@ for VER in "${CLANG_VERSIONS[@]}"; do
     build_single_llvm "$LLVM_REF"
     build_single_binutils
     test_kernel_arm64
-    package_and_publish "$VER" "$CURRENT_VER"
 
     aosp_rev="$(get_aosp_info "$VER")"
     base_desc="$(get_aosp_base_desc "$VER" "$aosp_rev")"
+
+    package_and_publish "$VER" "$CURRENT_VER" "$aosp_rev" "$base_desc"
 
     RESULTS+=("• <b>Clang ${VER} (<code>${CURRENT_VER}</code>):</b> ✅ Built & Published (<code>${aosp_rev}</code>)")
     tg_post_msg "<b>✅ Alchemist LLVM: Clang ${VER} Published!</b>

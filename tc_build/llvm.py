@@ -69,6 +69,8 @@ class CmakeVars(TypedDict, total=False):
     CMAKE_C_COMPILER_LAUNCHER: str
     CMAKE_C_FLAGS: str
     CMAKE_EXE_LINKER_FLAGS: str
+    CMAKE_MODULE_LINKER_FLAGS: str
+    CMAKE_SHARED_LINKER_FLAGS: str
     COMPILER_RT_BUILD_CRT: str
     COMPILER_RT_BUILD_GWP_ASAN: str
     COMPILER_RT_BUILD_LIBFUZZER: str
@@ -386,7 +388,8 @@ class LLVMBuilder(Builder):
         self.cmake_defines['CMAKE_C_COMPILER'] = self.tools.cc
         self.cmake_defines['CMAKE_CXX_COMPILER'] = self.tools.cxx
         if self.bolt:
-            self.cmake_defines['CMAKE_EXE_LINKER_FLAGS'] = '-Wl,--emit-relocs'
+            curr_exe_flags = self.cmake_defines.get('CMAKE_EXE_LINKER_FLAGS', '')
+            self.cmake_defines['CMAKE_EXE_LINKER_FLAGS'] = f"{curr_exe_flags} -Wl,--emit-relocs".strip()
         if tc_build.utils.path_is_set(self.folders.install):
             self.cmake_defines['CMAKE_INSTALL_PREFIX'] = self.folders.install
 

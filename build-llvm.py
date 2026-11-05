@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # pylint: disable=invalid-name
 
+import os
 import platform
+import shutil
 import textwrap
 import time
 from argparse import ArgumentParser, RawTextHelpFormatter
@@ -296,6 +298,16 @@ parser.add_argument(
                     '''),
     type=str,
     choices=['thin', 'full'],
+)
+parser.add_argument(
+    '--mlgo',
+    help=textwrap.dedent('''\
+                    Build LLVM with MLGO (Machine Learning Guided Optimization) support using
+                    TensorFlow Ahead-Of-Time (AOT) compilation. Enables ML-driven inlining
+                    and register allocation eviction.
+
+                    '''),
+    action='store_true',
 )
 parser.add_argument(
     '-m',
@@ -639,6 +651,63 @@ if args.multicall:
 if args.defines:
     defines = dict(define.split('=', 1) for define in args.defines)
     common_cmake_defines.update(defines)  # ty: ignore[invalid-argument-type]
+tf_path = None
+if args.mlgo:
+    tc_build.utils.print_header('Configuring MLGO (TensorFlow AOT)')
+    if 'TENSORFLOW_AOT_PATH' not in common_cmake_defines:
+        try:
+            import tensorflow as tf
+
+            tf_path = Path(tf.__file__).parent.resolve()
+            common_cmake_defines['TENSORFLOW_AOT_PATH'] = str(tf_path)
+        except ImportError:
+            tc_build.utils.print_warning(
+                'TensorFlow Python package is not installed! '
+                'Install tensorflow-cpu to enable MLGO TensorFlow AOT.'
+            )
+    else:
+        tf_path = Path(common_cmake_defines['TENSORFLOW_AOT_PATH']).resolve()
+
+    if 'LLVM_INLINER_MODEL_PATH' not in common_cmake_defines:
+        common_cmake_defines['LLVM_INLINER_MODEL_PATH'] = 'autogenerate'
+    if 'LLVM_RAEVICT_MODEL_PATH' not in common_cmake_defines:
+        common_cmake_defines['LLVM_RAEVICT_MODEL_PATH'] = 'autogenerate'
+
+    if tf_path and tf_path.is_dir():
+        # Ensure libtensorflow_framework.so symlink exists if only libtensorflow_framework.so.X is present
+        so_symlink = tf_path / 'libtensorflow_framework.so'
+        if not so_symlink.exists():
+            for candidate in sorted(tf_path.glob('libtensorflow_framework.so.*'), reverse=True):
+                try:
+                    so_symlink.symlink_to(candidate.name)
+                    break
+                except OSError:
+                    pass
+
+        # Patch tensorflow/xla_aot_runtime_src/CMakeLists.txt to link libtensorflow_framework.
+        # We attach the interface link library specifically to the tf_xla_runtime target so that
+        # only targets depending on MLGO inherit -ltensorflow_framework. This avoids passing
+        # -ltensorflow_framework globally via CMAKE_EXE_LINKER_FLAGS, which pollutes build-time
+        # host tools like llvm-min-tblgen / llvm-tblgen with conflicting embedded LLVM symbols.
+        xla_cmake = tf_path / 'xla_aot_runtime_src' / 'CMakeLists.txt'
+        if xla_cmake.exists():
+            try:
+                cmake_content = xla_cmake.read_text(encoding='utf-8')
+                filtered_lines = [
+                    line for line in cmake_content.splitlines()
+                    if 'target_link_libraries(tf_xla_runtime' not in line
+                    and '# Added by Alchemist' not in line
+                ]
+                filtered_lines.append(
+                    '# Added by Alchemist for MLGO Abseil runtime symbol resolution'
+                )
+                filtered_lines.append(
+                    'target_link_libraries(tf_xla_runtime INTERFACE '
+                    '-L${CMAKE_CURRENT_SOURCE_DIR}/.. -ltensorflow_framework)'
+                )
+                xla_cmake.write_text('\n'.join(filtered_lines) + '\n', encoding='utf-8')
+            except OSError as err:
+                tc_build.utils.print_warning(f'Could not patch {xla_cmake}: {err}')
 
 # Build bootstrap compiler if user did not request a single stage build
 if use_bootstrap := not args.build_stage1_only:
@@ -822,8 +891,58 @@ if args.bolt:
     final.bolt_builder.matrix['defconfig'] = llvm_targets
 
 tc_build.utils.print_header('Building LLVM (final)')
+
+# Strip stale global -ltensorflow_framework flags from existing CMakeCache.txt if present
+cache_file = Path(final.folders.build, 'CMakeCache.txt')
+if cache_file.exists():
+    try:
+        cache_text = cache_file.read_text(encoding='utf-8')
+        if '-ltensorflow_framework' in cache_text:
+            cleaned_lines = []
+            for cache_line in cache_text.splitlines():
+                if any(cache_line.startswith(pfx) for pfx in (
+                    'CMAKE_EXE_LINKER_FLAGS:', 'CMAKE_SHARED_LINKER_FLAGS:', 'CMAKE_MODULE_LINKER_FLAGS:'
+                )):
+                    var_name, var_val = cache_line.split('=', 1)
+                    val_cleaned = var_val.replace('-ltensorflow_framework', '')
+                    if tf_path:
+                        val_cleaned = val_cleaned.replace(f"-L{tf_path}", '')
+                    cleaned_lines.append(f"{var_name}={val_cleaned.strip()}")
+                else:
+                    cleaned_lines.append(cache_line)
+            cache_file.write_text('\n'.join(cleaned_lines) + '\n', encoding='utf-8')
+    except OSError:
+        pass
+
 final.configure()
+
+if args.mlgo and tf_path and tf_path.is_dir():
+    # Pre-populate build lib directory with libtensorflow_framework.so*
+    # so tools running directly from build folder during build find it via RPATH
+    final_build_lib = Path(final.folders.build, 'lib')
+    final_build_lib.mkdir(parents=True, exist_ok=True)
+    for tf_file in tf_path.glob('libtensorflow_framework.so*'):
+        dest = final_build_lib / tf_file.name
+        if not dest.exists():
+            if tf_file.is_symlink():
+                dest.symlink_to(os.readlink(tf_file))
+            else:
+                shutil.copy2(tf_file, dest)
+
 final.build()
+
+if args.mlgo and tf_path and tf_path.is_dir() and tc_build.utils.path_is_set(final.folders.install):
+    install_lib = Path(final.folders.install, 'lib')
+    install_lib.mkdir(parents=True, exist_ok=True)
+    for tf_file in tf_path.glob('libtensorflow_framework.so*'):
+        dest = install_lib / tf_file.name
+        if not dest.exists():
+            tc_build.utils.print_info(f"Bundling {tf_file.name} to {install_lib}")
+            if tf_file.is_symlink():
+                dest.symlink_to(os.readlink(tf_file))
+            else:
+                shutil.copy2(tf_file, dest)
+
 final.show_install_info()
 
 print(f"Script duration: {tc_build.utils.get_duration(script_start)}")

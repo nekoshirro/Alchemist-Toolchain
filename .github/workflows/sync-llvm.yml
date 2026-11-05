@@ -1,0 +1,92 @@
+name: Sync LLVM Branches from Android AOSP
+
+on:
+  schedule:
+    # Runs once daily at 01:00 AM WIB (18:00 UTC)
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Clang versions to sync (space-separated, e.g. 21 22 23 24)'
+        required: false
+        default: '21 22 23 24'
+      dry_run:
+        description: 'Dry run (do not push to remote)'
+        required: false
+        type: boolean
+        default: false
+      force:
+        description: 'Force sync even if upstream has no new commits'
+        required: false
+        type: boolean
+        default: false
+      chunks:
+        description: 'Number of push chunks (default: 16)'
+        required: false
+        default: '16'
+
+concurrency:
+  group: sync-llvm
+  cancel-in-progress: false
+
+jobs:
+  sync-branches:
+    name: Sync LLVM to Alchemist-LLVM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Alchemist-Toolchain
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y git git-filter-repo
+          pip install git-filter-repo
+
+      - name: Clean disk space for large git clones
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Configure Git for large pushes
+        run: |
+          git config --global http.postBuffer 1048576000
+          git config --global http.version HTTP/1.1
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 600
+
+      - name: Run LLVM Sync
+        env:
+          LLVM_PUSH_TOKEN: ${{ secrets.LLVM_PUSH_TOKEN || secrets.PAT_TOKEN || secrets.GH_TOKEN }}
+        run: |
+          if [ "${{ inputs.dry_run }}" != "true" ] && [ -z "$LLVM_PUSH_TOKEN" ]; then
+            echo "::error::LLVM_PUSH_TOKEN (or PAT_TOKEN) is not set in repository secrets! A Personal Access Token (PAT) with repo scope is required to push to nekoshirro/Alchemist-LLVM."
+            exit 1
+          fi
+
+          # Mask token if set
+          if [ -n "$LLVM_PUSH_TOKEN" ]; then
+            echo "::add-mask::$LLVM_PUSH_TOKEN"
+          fi
+
+          EXTRA_ARGS=()
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS+=(--dry-run)
+          fi
+          if [ "${{ inputs.force }}" = "true" ]; then
+            EXTRA_ARGS+=(--force)
+          fi
+          if [ -n "${{ inputs.chunks }}" ]; then
+            EXTRA_ARGS+=(--chunks "${{ inputs.chunks }}")
+          fi
+
+          VERSIONS="${{ inputs.versions || '21 22 23 24' }}"
+          python3 sync-llvm.py --versions $VERSIONS "${EXTRA_ARGS[@]}"

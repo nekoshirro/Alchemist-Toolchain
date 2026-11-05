@@ -30,6 +30,8 @@ REPO_URL="https://github.com/$GH_REPO"
 
 CLANG_VERSIONS=(${*:-23})
 
+ENABLE_MLGO="${ENABLE_MLGO:-1}"
+
 TG_TOKEN="${TG_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
 GH_TOKEN="${GH_TOKEN:-}"
@@ -41,6 +43,7 @@ if [[ -z "$TG_TOKEN" || -z "$TG_CHAT_ID" ]]; then
 fi
 
 BOT_MSG_URL="https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+BOT_DOC_URL="https://api.telegram.org/bot${TG_TOKEN}/sendDocument"
 
 tg_post_msg() {
     [[ "$TG_NOTIFY" -eq 1 ]] || return 0
@@ -51,12 +54,76 @@ tg_post_msg() {
         --data-urlencode "text=$1" >/dev/null || true
 }
 
+tg_post_doc() {
+    local doc="$1"
+    local caption="${2:-}"
+    [[ "$TG_NOTIFY" -eq 1 ]] || return 0
+    [[ -f "$doc" ]] || return 0
+
+    local upload_file="$doc"
+    local need_rm=0
+
+    # Telegram sendDocument limit is 50MB; compress with gzip if > 45MB
+    local size
+    size=$(stat -c%s "$doc" 2>/dev/null || echo 0)
+    if (( size > 45000000 )); then
+        gzip -c "$doc" > "${doc}.gz"
+        upload_file="${doc}.gz"
+        need_rm=1
+    fi
+
+    curl -s -X POST "$BOT_DOC_URL" \
+        -F chat_id="$TG_CHAT_ID" \
+        -F document=@"$upload_file" \
+        -F caption="$caption" \
+        -F "parse_mode=html" >/dev/null || true
+
+    if [[ "$need_rm" -eq 1 ]]; then
+        rm -f "$upload_file"
+    fi
+}
+
 base=$(dirname "$(readlink -f "$0")")
 install="$base/install"
 src="$base/src"
 
 rel_date="$(date "+%Y%m%d")"
 rel_friendly_date="$(date "+%B %-d, %Y")"
+
+# Configure continuous build logging
+LOG_FILE="$base/build-tc-${rel_date}.log"
+: > "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+BUILD_SUCCESS=0
+CURRENT_BUILD_TARGET=""
+
+on_exit() {
+    local exit_code=$?
+    sleep 0.5
+    if [[ $exit_code -eq 130 ]]; then
+        return 0
+    fi
+    if [[ $exit_code -ne 0 && $BUILD_SUCCESS -eq 0 ]]; then
+        err "$LLVM_NAME: Build failed with exit code $exit_code!"
+
+        local clean_log="$base/build-error-${rel_date}.log"
+        sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$LOG_FILE" > "$clean_log" 2>/dev/null || cp "$LOG_FILE" "$clean_log"
+
+        local target_name="${CURRENT_BUILD_TARGET:-Clang ${VERSIONS_DISPLAY:-unknown}}"
+        local fail_msg="<b>❌ Alchemist LLVM: Build Failed!</b>
+<b>Target:</b> <code>$target_name</code>
+<b>Date:</b> <code>$rel_friendly_date</code>
+<b>Exit code:</b> <code>$exit_code</code>
+
+Build failure log attached below:"
+
+        tg_post_msg "$fail_msg"
+        tg_post_doc "$clean_log" "📄 <b>Build Error Log:</b> <code>${target_name}</code> (${rel_friendly_date})"
+        rm -f "$clean_log"
+    fi
+}
+trap on_exit EXIT
 
 if git -C "$base" rev-parse HEAD &>/dev/null; then
     builder_commit="$(git -C "$base" rev-parse HEAD)"
@@ -86,6 +153,7 @@ do_deps() {
         make
         ninja-build
         python3
+        python3-pip
         texinfo
         xz-utils
         zlib1g-dev
@@ -115,6 +183,15 @@ do_deps() {
         }
     else
         msg "$LLVM_NAME: All required apt dependencies are already installed."
+    fi
+
+    if [[ "$ENABLE_MLGO" -eq 1 ]]; then
+        if ! python3 -c "import tensorflow" &>/dev/null; then
+            msg "$LLVM_NAME: Installing tensorflow-cpu for MLGO support..."
+            pip3 install --break-system-packages --no-cache-dir tensorflow-cpu 2>/dev/null || \
+            pip3 install --no-cache-dir tensorflow-cpu 2>/dev/null || \
+            warn "$LLVM_NAME: Failed to install tensorflow-cpu. Ensure tensorflow-cpu is installed for MLGO."
+        fi
     fi
 
     if [[ -z "$GH_TOKEN" ]]; then
@@ -152,6 +229,46 @@ get_remote_llvm_version() {
     echo "${major}.${minor}.${patch}${suffix}"
 }
 
+get_aosp_info() {
+    local ver="$1"
+    local aosp_file="$src/llvm-project/AndroidVersion.txt"
+    local rev=""
+
+    if [[ -f "$aosp_file" ]]; then
+        rev=$(grep -oP '^based on \K.*' "$aosp_file" | tr -d '\r\n' || echo "")
+    fi
+
+    if [[ -z "$rev" ]] && git -C "$src/llvm-project" rev-parse HEAD &>/dev/null; then
+        local log_rev
+        log_rev=$(git -C "$src/llvm-project" log -n 50 --format="%s" 2>/dev/null | grep -oP 'LLVM update to \K[0-9]+' | head -n1 || echo "")
+        if [[ -n "$log_rev" ]]; then
+            rev="r${log_rev}"
+        fi
+    fi
+
+    if [[ -z "$rev" ]]; then
+        case "$ver" in
+            21) rev="r574158" ;;
+            22) rev="r596125" ;;
+            23) rev="r614150" ;;
+            24) rev="upstream-main" ;;
+            *)  rev="unknown" ;;
+        esac
+    fi
+
+    echo "$rev"
+}
+
+get_aosp_base_desc() {
+    local ver="$1"
+    local rev="$2"
+    if [[ "$ver" == "24" ]] || [[ "$rev" == *"upstream"* ]] || [[ "$rev" == *"Upstream"* ]]; then
+        echo "Based on LLVM Upstream Main (Trunk)"
+    else
+        echo "Based on Google AOSP Clang version $rev"
+    fi
+}
+
 is_already_released() {
     local ver="$1"
     local target_ver="$2"
@@ -166,20 +283,20 @@ is_already_released() {
 
     python3 -c "
 import sys, json
-ver = sys.argv[1]
-target = sys.argv[2]
+ver = sys.argv[1].lower()
+target = sys.argv[2].lower()
 try:
     data = json.load(sys.stdin)
     for r in data:
-        body = r.get('body', '')
-        tag = r.get('tag_name', '')
+        body = (r.get('body') or '').lower()
+        tag = (r.get('tag_name') or '').lower()
         if f'clang-{ver}' in body and target in body:
             sys.exit(0)
         if target in tag and (f'clang-{ver}' in tag or f'llvm-{ver}' in tag or tag.startswith(f'v{ver}')):
             sys.exit(0)
         for a in r.get('assets', []):
-            name = a.get('name', '')
-            if target in name and f'LLVM-{ver}' in name:
+            name = (a.get('name') or '').lower()
+            if target in name and f'llvm-{ver}' in name:
                 sys.exit(0)
     sys.exit(1)
 except Exception:
@@ -229,7 +346,14 @@ EOF
 
 build_single_llvm() {
     local llvm_ref="$1"
-    msg "$LLVM_NAME: Building LLVM for $llvm_ref (Stage 1 ThinLTO Kernel Profile)..."
+    local profile_desc="Stage 1 ThinLTO Kernel Profile"
+    local mlgo_args=()
+    if [[ "$ENABLE_MLGO" -eq 1 ]]; then
+        profile_desc="Stage 1 ThinLTO Kernel Profile with MLGO"
+        mlgo_args+=(--mlgo)
+    fi
+
+    msg "$LLVM_NAME: Building LLVM for $llvm_ref ($profile_desc)..."
 
     local total_ram_gb
     total_ram_gb=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo 4)
@@ -250,7 +374,8 @@ build_single_llvm() {
         --install-folder "$install" \
         --targets AArch64 ARM X86 \
         --projects clang lld \
-        --shallow-clone
+        --shallow-clone \
+        "${mlgo_args[@]}"
 }
 
 package_and_publish() {
@@ -281,7 +406,12 @@ package_and_publish() {
     tar -C "$install" -cf - . | XZ_OPT='-9e -T0' xz -c > "$base/$asset_name"
 
     msg "$LLVM_NAME: Publishing $asset_name to GitHub Release $release_tag..."
-    local notes_entry="Clang-${ver}
+    local aosp_rev
+    aosp_rev="$(get_aosp_info "$ver")"
+    local base_desc
+    base_desc="$(get_aosp_base_desc "$ver" "$aosp_rev")"
+
+    local notes_entry="Clang-${ver}: ${base_desc}
 Clang version: $clang_version
 LLD version: $lld_version
 
@@ -319,16 +449,22 @@ msg "========================================================"
 msg " Starting Alchemist LLVM Pipeline: Clang ${VERSIONS_DISPLAY}"
 msg "========================================================"
 
+PIPELINE_PROFILE="Stage 1 ThinLTO Kernel Profile"
+if [[ "$ENABLE_MLGO" -eq 1 ]]; then
+    PIPELINE_PROFILE="Stage 1 ThinLTO Kernel Profile with MLGO"
+fi
+
 START_MSG="<b>🧪 Alchemist LLVM Toolchain Pipeline Started</b>
 <b>Date:</b> <code>$rel_friendly_date</code>
 <b>Versions:</b> <code>Clang ${VERSIONS_DISPLAY}</code>
-<b>Profile:</b> Stage 1 ThinLTO Kernel Profile"
+<b>Profile:</b> $PIPELINE_PROFILE"
 tg_post_msg "$START_MSG"
 
 RESULTS=()
 
 for VER in "${CLANG_VERSIONS[@]}"; do
     LLVM_REF="clang-${VER}"
+    CURRENT_BUILD_TARGET="$LLVM_REF"
     msg "--------------------------------------------------------"
     msg " Evaluating $LLVM_REF..."
     msg "--------------------------------------------------------"
@@ -349,16 +485,31 @@ for VER in "${CLANG_VERSIONS[@]}"; do
     msg "🚀 Building $LLVM_REF ($CURRENT_VER)..."
     tg_post_msg "<b>🔨 Alchemist LLVM: Building Clang ${VER}...</b>
 <b>Version:</b> <code>${CURRENT_VER}</code>
-<b>Profile:</b> Stage 1 ThinLTO Kernel Profile"
+<b>Profile:</b> $PIPELINE_PROFILE"
 
     build_single_llvm "$LLVM_REF"
+    if [[ "$ENABLE_MLGO" -eq 1 ]]; then
+        local tf_dir
+        tf_dir=$(python3 -c "import tensorflow as tf, os; print(os.path.dirname(tf.__file__))" 2>/dev/null || true)
+        if [[ -n "$tf_dir" && -d "$tf_dir" ]]; then
+            msg "$LLVM_NAME: Bundling TensorFlow runtime libraries into install directory for MLGO..."
+            mkdir -p "$install/lib"
+            cp -d "$tf_dir"/libtensorflow_framework.so* "$install/lib/" 2>/dev/null || true
+        fi
+    fi
     build_single_binutils
     test_kernel_arm64
     package_and_publish "$VER" "$CURRENT_VER"
 
-    RESULTS+=("• <b>Clang ${VER} (<code>${CURRENT_VER}</code>):</b> ✅ Built & Published")
+    local aosp_rev
+    aosp_rev="$(get_aosp_info "$VER")"
+    local base_desc
+    base_desc="$(get_aosp_base_desc "$VER" "$aosp_rev")"
+
+    RESULTS+=("• <b>Clang ${VER} (<code>${CURRENT_VER}</code>):</b> ✅ Built & Published (<code>${aosp_rev}</code>)")
     tg_post_msg "<b>✅ Alchemist LLVM: Clang ${VER} Published!</b>
 <b>Version:</b> <code>${CURRENT_VER}</code>
+<b>Base:</b> <code>${base_desc}</code>
 <b>Asset:</b> <code>Alchemist-LLVM-${VER}-${rel_date}.tar.xz</code>
 <b>Release:</b> <code>$release_url</code>"
 done
@@ -379,4 +530,5 @@ msg " Pipeline finished!"
 echo -e "$RESULTS_TEXT"
 msg "========================================================"
 
+BUILD_SUCCESS=1
 tg_post_msg "$SUMMARY_MSG"

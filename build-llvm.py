@@ -794,7 +794,12 @@ if args.mlgo:
         if tf_compile_cmake.exists():
             try:
                 tf_cmake_content = tf_compile_cmake.read_text(encoding='utf-8')
-                if 'sanitize_aot_header.py' not in tf_cmake_content:
+                if sanitize_py.as_posix() not in tf_cmake_content:
+                    if '${CMAKE_CURRENT_LIST_DIR}/sanitize_aot_header.py' in tf_cmake_content:
+                        tf_cmake_content = tf_cmake_content.replace(
+                            '${CMAKE_CURRENT_LIST_DIR}/sanitize_aot_header.py',
+                            sanitize_py.as_posix()
+                        )
                     if 'import re; p=r' in tf_cmake_content:
                         import re
                         tf_cmake_content = re.sub(r'[ \t]*COMMAND \${Python3_EXECUTABLE} -c "import re;[^\n]*\n', '', tf_cmake_content)
@@ -817,15 +822,15 @@ if args.mlgo:
                         tf_cmake_content = tf_cmake_content.replace(target_cmd, replacement_cmd, 1).replace(
                             target_objs, replacement_objs, 1
                         )
-                    target_triple = '--target_triple ${LLVM_HOST_TRIPLE}\n  )'
-                    replacement_triple = (
-                        '--target_triple ${LLVM_HOST_TRIPLE}\n'
-                        '    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_LIST_DIR}/sanitize_aot_header.py" "${hdr_file}"\n'
-                        '  )'
-                    )
-                    patched_content = tf_cmake_content.replace(target_triple, replacement_triple, 1)
-                    if patched_content != tf_cmake_content:
-                        tf_compile_cmake.write_text(patched_content, encoding='utf-8')
+                    if sanitize_py.as_posix() not in tf_cmake_content:
+                        target_triple = '--target_triple ${LLVM_HOST_TRIPLE}\n  )'
+                        replacement_triple = (
+                            '--target_triple ${LLVM_HOST_TRIPLE}\n'
+                            f'    COMMAND ${{Python3_EXECUTABLE}} "{sanitize_py.as_posix()}" "${{hdr_file}}"\n'
+                            '  )'
+                        )
+                        tf_cmake_content = tf_cmake_content.replace(target_triple, replacement_triple, 1)
+                    tf_compile_cmake.write_text(tf_cmake_content, encoding='utf-8')
             except OSError as err:
                 tc_build.utils.print_warning(f'Could not patch {tf_compile_cmake}: {err}')
 

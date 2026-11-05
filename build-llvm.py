@@ -762,38 +762,68 @@ if args.mlgo:
         # Patch llvm/cmake/modules/TensorFlowCompile.cmake for TensorFlow 2.16+
         # Modern TensorFlow splits AOT compilation output into .o, _constants.o, and _metadata.o.
         # Upstream LLVM only registers .o, leaving constant buffer symbols undefined during ThinLTO linking.
+        # We also sanitize generated AOT headers via sanitize_aot_header.py to eliminate Abseil container symbols.
+        sanitize_py = llvm_folder / 'llvm' / 'cmake' / 'modules' / 'sanitize_aot_header.py'
+        sanitize_code = (
+            '#!/usr/bin/env python3\n'
+            'import sys\n'
+            'from pathlib import Path\n\n'
+            'def main():\n'
+            '    if len(sys.argv) < 2:\n'
+            '        return\n'
+            '    hdr = Path(sys.argv[1])\n'
+            '    if not hdr.is_file():\n'
+            '        return\n'
+            '    c = hdr.read_text(encoding="utf-8")\n'
+            '    m1 = "FunctionLibrarySymbolMap() {"\n'
+            '    m2 = "\\n protected:"\n'
+            '    if m1 in c and m2 in c:\n'
+            '        p1, rest = c.split(m1, 1)\n'
+            '        _, p2 = rest.split(m2, 1)\n'
+            '        hdr.write_text(p1 + "FunctionLibrarySymbolMap() {\\n    return {};\\n  }\\n protected:" + p2, encoding="utf-8")\n\n'
+            'if __name__ == "__main__":\n'
+            '    main()\n'
+        )
+        try:
+            sanitize_py.write_text(sanitize_code, encoding='utf-8')
+            sanitize_py.chmod(0o755)
+        except OSError as err:
+            tc_build.utils.print_warning(f'Could not write {sanitize_py}: {err}')
+
         tf_compile_cmake = llvm_folder / 'llvm' / 'cmake' / 'modules' / 'TensorFlowCompile.cmake'
         if tf_compile_cmake.exists():
             try:
                 tf_cmake_content = tf_compile_cmake.read_text(encoding='utf-8')
-                if 'constants_file' not in tf_cmake_content:
-                    target_cmd = 'add_custom_command(OUTPUT ${obj_file} ${hdr_file}'
-                    replacement_cmd = (
-                        'set(constants_file ${prefix}_constants.o)\n'
-                        '  set(metadata_file ${prefix}_metadata.o)\n'
-                        '  add_custom_command(OUTPUT ${obj_file} ${hdr_file} ${constants_file} ${metadata_file}'
-                    )
-                    target_objs = (
-                        'set(GENERATED_OBJS ${GENERATED_OBJS} ${obj_file} PARENT_SCOPE)\n'
-                        '  set_source_files_properties(${obj_file} PROPERTIES'
-                    )
-                    replacement_objs = (
-                        'set(all_gen_objs ${obj_file} ${constants_file} ${metadata_file})\n'
-                        '  set(GENERATED_OBJS ${GENERATED_OBJS} ${all_gen_objs} PARENT_SCOPE)\n'
-                        '  set_source_files_properties(${all_gen_objs} PROPERTIES'
-                    )
+                if 'sanitize_aot_header.py' not in tf_cmake_content:
+                    if 'import re; p=r' in tf_cmake_content:
+                        import re
+                        tf_cmake_content = re.sub(r'[ \t]*COMMAND \${Python3_EXECUTABLE} -c "import re;[^\n]*\n', '', tf_cmake_content)
+                    if 'constants_file' not in tf_cmake_content:
+                        target_cmd = 'add_custom_command(OUTPUT ${obj_file} ${hdr_file}'
+                        replacement_cmd = (
+                            'set(constants_file ${prefix}_constants.o)\n'
+                            '  set(metadata_file ${prefix}_metadata.o)\n'
+                            '  add_custom_command(OUTPUT ${obj_file} ${hdr_file} ${constants_file} ${metadata_file}'
+                        )
+                        target_objs = (
+                            'set(GENERATED_OBJS ${GENERATED_OBJS} ${obj_file} PARENT_SCOPE)\n'
+                            '  set_source_files_properties(${obj_file} PROPERTIES'
+                        )
+                        replacement_objs = (
+                            'set(all_gen_objs ${obj_file} ${constants_file} ${metadata_file})\n'
+                            '  set(GENERATED_OBJS ${GENERATED_OBJS} ${all_gen_objs} PARENT_SCOPE)\n'
+                            '  set_source_files_properties(${all_gen_objs} PROPERTIES'
+                        )
+                        tf_cmake_content = tf_cmake_content.replace(target_cmd, replacement_cmd, 1).replace(
+                            target_objs, replacement_objs, 1
+                        )
                     target_triple = '--target_triple ${LLVM_HOST_TRIPLE}\n  )'
                     replacement_triple = (
                         '--target_triple ${LLVM_HOST_TRIPLE}\n'
-                        '    COMMAND ${Python3_EXECUTABLE} -c "import re; p=r\'${hdr_file}\'; '
-                        'c=open(p).read(); '
-                        'open(p,\'w\').write(re.sub(r\'static absl::flat_hash_map<std::string, void\\*> FunctionLibrarySymbolMap\\(\\) \\{[\\s\\S]*?\\n protected:\', '
-                        '\'static absl::flat_hash_map<std::string, void*> FunctionLibrarySymbolMap() {\\\\n    return {};\\\\n  }\\\\n protected:\', c))"\n'
+                        '    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_LIST_DIR}/sanitize_aot_header.py" "${hdr_file}"\n'
                         '  )'
                     )
-                    patched_content = tf_cmake_content.replace(target_cmd, replacement_cmd, 1).replace(
-                        target_objs, replacement_objs, 1
-                    ).replace(target_triple, replacement_triple, 1)
+                    patched_content = tf_cmake_content.replace(target_triple, replacement_triple, 1)
                     if patched_content != tf_cmake_content:
                         tf_compile_cmake.write_text(patched_content, encoding='utf-8')
             except OSError as err:
